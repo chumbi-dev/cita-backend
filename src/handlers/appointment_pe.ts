@@ -1,5 +1,8 @@
 import { SQSEvent } from 'aws-lambda';
 import mysql from 'mysql2/promise';
+import AWS from 'aws-sdk';
+
+const eventBridge = new AWS.EventBridge();
 
 export const handler = async (event: SQSEvent): Promise<void> => {
   try {
@@ -13,23 +16,42 @@ export const handler = async (event: SQSEvent): Promise<void> => {
     });
 
     for (const appointment of messages) {
-      await connection.execute(
+      const [result] = await connection.execute(
         `INSERT INTO appointments 
-         (insuredId, scheduleId, countryISO, status, createdAt) 
-         VALUES (?, ?, ?, ?, ?)`,
+         (insuredId, scheduleId, countryISO, createdAt) 
+         VALUES (?, ?, ?, ?)`,
         [
           appointment.insuredId,
           appointment.scheduleId,
           appointment.countryISO,
-          appointment.status,
           appointment.createdAt
         ]
       );
+
+      if ('affectedRows' in result && result.affectedRows > 0) {
+        await eventBridge.putEvents({
+          Entries: [
+            {
+              EventBusName: process.env.EVENT_BUS_NAME!,
+              Source: 'appointment.result',
+              DetailType: 'AppointmentResult',
+              Detail: JSON.stringify({
+                insuredId: appointment.insuredId,
+                createdAt: appointment.createdAt
+              })
+            }
+          ]
+        }).promise();
+
+        console.log(`Evento publicado para insuredId ${appointment.insuredId}`);
+      } else {
+        console.warn(`No se insertó ninguna fila para insuredId ${appointment.insuredId}`);
+      }
     }
 
     await connection.end();
   } catch (error) {
-    console.error('Error al insertar citas en MySQL PE:', error);
+    console.error('Error al insertar citas en MySQL PE o al publicar en EventBridge:', error);
     throw error;
   }
 };
